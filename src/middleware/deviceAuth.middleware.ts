@@ -16,15 +16,20 @@ export async function requireDeviceAuth(req: Request, res: Response, next: NextF
 
   try {
     // Extract API key from x-device-key header, Authorization: Bearer <key>, or body apiKey/api_key
-    const authHeader = req.headers.authorization;
-    const customHeader = req.headers['x-device-key'];
+    const rawAuthHeader = req.headers.authorization;
+    const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] : rawAuthHeader;
+    const rawCustomHeader = req.headers['x-device-key'];
+    const customHeader = Array.isArray(rawCustomHeader) ? rawCustomHeader[0] : rawCustomHeader;
     const bodyApiKey = req.body?.apiKey || req.body?.api_key;
 
     let apiKey: string | undefined;
     if (typeof customHeader === 'string' && customHeader.trim()) {
       apiKey = customHeader.trim();
-    } else if (authHeader && authHeader.startsWith('Bearer ')) {
-      apiKey = authHeader.split(' ')[1]?.trim();
+    } else if (typeof authHeader === 'string') {
+      const bearerMatch = authHeader.match(/^Bearer\s+(.+)$/i);
+      if (bearerMatch && bearerMatch[1]?.trim()) {
+        apiKey = bearerMatch[1].trim();
+      }
     } else if (typeof bodyApiKey === 'string' && bodyApiKey.trim()) {
       apiKey = bodyApiKey.trim();
     }
@@ -48,8 +53,28 @@ export async function requireDeviceAuth(req: Request, res: Response, next: NextF
     }
 
     // Extract deviceId from body (deviceId or device_id) or header (x-device-id)
-    const rawDeviceId = req.body?.deviceId || req.body?.device_id || req.headers['x-device-id'];
-    const deviceId = rawDeviceId ? String(rawDeviceId).trim().toUpperCase() : undefined;
+    const rawHeaderDeviceId = req.headers['x-device-id'];
+    const headerDeviceId = (Array.isArray(rawHeaderDeviceId) ? rawHeaderDeviceId[0] : rawHeaderDeviceId)
+      ?.toString()
+      .trim()
+      .toUpperCase();
+
+    const payloadDeviceId = (req.body?.deviceId || req.body?.device_id)?.toString().trim().toUpperCase();
+
+    // Reject if both header and body specify conflicting device IDs
+    if (headerDeviceId && payloadDeviceId && headerDeviceId !== payloadDeviceId) {
+      if (context) {
+        context.auth = { authorized: false, reason: 'DEVICE_ID_MISMATCH' };
+        context.error = {
+          code: 'DEVICE_ID_MISMATCH',
+          message: 'x-device-id header does not match payload deviceId',
+        };
+      }
+      sendError(res, 'x-device-id header does not match payload deviceId', 403, undefined, 'DEVICE_ID_MISMATCH');
+      return;
+    }
+
+    const deviceId = payloadDeviceId || headerDeviceId;
 
     if (!deviceId) {
       if (context) {
@@ -83,7 +108,6 @@ export async function requireDeviceAuth(req: Request, res: Response, next: NextF
     }
 
     // Ensure authenticated device matches body deviceId if body deviceId is provided
-    const payloadDeviceId = (req.body?.deviceId || req.body?.device_id)?.toString().trim().toUpperCase();
     if (payloadDeviceId && payloadDeviceId !== device.deviceId) {
       if (context) {
         context.auth = { authorized: false, reason: 'DEVICE_ID_MISMATCH' };

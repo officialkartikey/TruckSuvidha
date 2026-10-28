@@ -170,6 +170,8 @@ docker compose down
 | `RATE_LIMIT_WINDOW_MS` | Rate limiting evaluation window in milliseconds | `60000` (1 min) |
 | `RATE_LIMIT_MAX_REQUESTS` | Maximum requests per window for standard admin APIs | `100` |
 | `DEVICE_RATE_LIMIT_MAX_REQUESTS`| Maximum requests per window for device telemetry ingestion | `600` |
+| `MAX_GPS_AGE_HOURS` | Maximum age in hours for incoming GPS timestamps | `24` |
+| `TRUST_PROXY` | Express proxy hops to trust behind reverse proxy (Render: 1) | `1` |
 
 ---
 
@@ -540,18 +542,153 @@ Emitted if an admin attempts to subscribe to an invalid or unauthorized device:
 
 ---
 
-## 9. Firmware Guidelines for Hardware Devices
+## 9. Firmware Guidelines & ESP32 Integration
 
 When programming the ESP32 / cellular modem firmware:
 
-1. **Cellular Disconnection & Offline Buffering**:
+1. **Authentication Requirement**:
+   - The backend enforces per-device API key authentication. Every request to `POST /api/v1/device/location` **must** include the header:
+     `x-device-key: <device-api-key>` (or `Authorization: Bearer <device-api-key>`).
+   - Requests without an API key fail with HTTP 401 (`DEVICE_AUTH_REQUIRED`). Requests with mismatched keys fail with HTTP 401 (`INVALID_DEVICE_CREDENTIALS`).
+   - Device IDs (`ESP32_001`) are identifiers, **not secrets**. Never rely on device IDs alone for authentication.
+
+2. **Secure Device Credential Storage (NVS Flash)**:
+   - **Never hardcode API keys or Wi-Fi/cellular credentials into source code.**
+   - Store the provisioned `apiKey` and `deviceId` in the ESP32's non-volatile storage (NVS) using the `Preferences.h` library.
+   - For high-security deployments, enable **ESP32 Flash Encryption** and **Secure Boot v2** so NVS partitions cannot be dumped over UART.
+
+3. **Cellular Disconnection & Offline Buffering**:
    - Store unsent GPS fixes in local flash/SPIFFS/SD card buffer when cellular reception is dropped.
    - Upon reconnecting to the cellular network, upload queued points in FIFO order.
    - The backend accepts buffered historical timestamps and saves them in `LocationHistory` without overwriting more recent coordinates on the live dashboard.
-2. **Fixed Retries**:
-   - In case of network timeout, retrying with the same timestamp is safe; the backend deduplicates identical events.
-3. **No GPS Fix**:
-   - If the vehicle enters a tunnel or underground garage, send `gpsFixed: false` along with the current battery level. The backend will record the heartbeat without disturbing the last known map marker.
+
+4. **Fixed Retries & Sequence Numbers**:
+   - Include monotonically increasing integer `seq` numbers.
+   - In case of network timeout, retrying with the same timestamp and sequence number is deduplicated cleanly.
+
+5. **No GPS Fix (Heartbeat Mode)**:
+   - If the vehicle enters a tunnel or underground parking, send `fix_valid: false` (or `gpsFixed: false`) with battery percentage. The backend updates the device heartbeat and online status without overwriting the last known geographic marker.
+
+---
+
+### ESP32 C++ / Arduino HTTP Request Implementation
+
+The following production-ready example demonstrates:
+- Loading the device ID and API key securely from ESP32 NVS using `Preferences`.
+- Constructing the JSON telemetry payload with sequence numbers.
+- Transmitting telemetry via HTTPS with `x-device-key`.
+- Handling responses (HTTP 200, 401 auth failure, 409 duplicate seq, 429 rate limit).
+
+```cpp
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <Preferences.h>
+#include <ArduinoJson.h>
+
+// Global persistent configuration
+Preferences preferences;
+String deviceId;
+String deviceApiKey;
+String serverUrl = "https://your-service-name.onrender.com/api/v1/device/location";
+
+uint32_t sequenceNumber = 1;
+
+/**
+ * Loads device credentials securely from ESP32 NVS flash.
+ * Avoids hardcoding secrets in firmware source code.
+ */
+bool loadDeviceCredentials() {
+  preferences.begin("tracker_cfg", true); // read-only mode
+  deviceId = preferences.getString("dev_id", "");
+  deviceApiKey = preferences.getString("api_key", "");
+  preferences.end();
+
+  if (deviceId.length() == 0 || deviceApiKey.length() == 0) {
+    Serial.println(F("[ERROR] Device credentials not found in NVS! Please provision device."));
+    return false;
+  }
+
+  Serial.printf("[INFO] Loaded device credentials for Device ID: %s\n", deviceId.c_str());
+  return true;
+}
+
+/**
+ * One-time provisioning helper: Call this during factory setup / serial configuration
+ * to store the provisioned API key securely in NVS flash.
+ */
+void provisionDeviceCredentials(const char* id, const char* key) {
+  preferences.begin("tracker_cfg", false); // read-write mode
+  preferences.putString("dev_id", id);
+  preferences.putString("api_key", key);
+  preferences.end();
+  Serial.println(F("[SUCCESS] Credentials successfully saved to NVS."));
+}
+
+/**
+ * Transmits GPS telemetry to the backend API with authentication.
+ */
+bool sendLocationTelemetry(double latitude, double longitude, float speedKmph,
+                           const char* gpsUtcIsoString, bool fixValid, int batteryPercent) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("[WARN] WiFi not connected. Telemetry skipped."));
+    return false;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure(); // In production, use client.setCACert(root_ca) for TLS verification
+
+  HTTPClient http;
+  if (!http.begin(client, serverUrl)) {
+    Serial.println(F("[ERROR] Unable to connect to backend endpoint"));
+    return false;
+  }
+
+  // Set mandatory HTTP headers
+  http.addHeader("Content-Type", "application/json");
+  // Set the secret device API key header
+  http.addHeader("x-device-key", deviceApiKey);
+  // Optional: Bearer token is also supported by the backend:
+  // http.addHeader("Authorization", String("Bearer ") + deviceApiKey);
+
+  // Construct JSON payload
+  StaticJsonDocument<384> doc;
+  doc["device_id"] = deviceId;
+  doc["seq"] = sequenceNumber;
+  doc["latitude"] = latitude;
+  doc["longitude"] = longitude;
+  doc["speed_kmph"] = speedKmph;
+  doc["gps_utc"] = gpsUtcIsoString;
+  doc["fix_valid"] = fixValid;
+  doc["battery_percent"] = batteryPercent;
+
+  String requestBody;
+  serializeJson(doc, requestBody);
+
+  int httpResponseCode = http.POST(requestBody);
+
+  if (httpResponseCode == 200) {
+    Serial.printf("[SUCCESS] Telemetry ingested (seq: %u, HTTP %d)\n", sequenceNumber, httpResponseCode);
+    sequenceNumber++;
+    http.end();
+    return true;
+  } else if (httpResponseCode == 401) {
+    Serial.println(F("[CRITICAL] HTTP 401 Unauthorized: Invalid or missing x-device-key! Check provisioning."));
+  } else if (httpResponseCode == 404) {
+    Serial.println(F("[ERROR] HTTP 404: Device ID not registered in backend."));
+  } else if (httpResponseCode == 409) {
+    Serial.println(F("[WARN] HTTP 409: Duplicate sequence number or duplicate timestamp."));
+    sequenceNumber++; // Advance seq past collision
+  } else if (httpResponseCode == 429) {
+    Serial.println(F("[WARN] HTTP 429: Ingestion rate limit exceeded. Backing off."));
+  } else {
+    Serial.printf("[ERROR] HTTP Error %d: %s\n", httpResponseCode, http.getString().c_str());
+  }
+
+  http.end();
+  return false;
+}
+```
 
 ---
 

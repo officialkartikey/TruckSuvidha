@@ -550,4 +550,186 @@ describe('Location Ingestion & History Module', () => {
 
     spy.mockRestore();
   });
+
+  describe('Device Authentication & Verification Matrix', () => {
+    it('should authenticate device using Authorization: Bearer <token>', async () => {
+      const timestamp = new Date(Date.now() - 500).toISOString();
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('Authorization', `Bearer ${deviceApiKey}`)
+        .send({
+          device_id: testDeviceId,
+          seq: 601,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 35.5,
+          gps_utc: timestamp,
+          fix_valid: true,
+          battery_percent: 88,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.deviceId).toBe(testDeviceId);
+      expect(res.body.data.latestLocationUpdated).toBe(true);
+      expect(res.body.data.historySaved).toBe(true);
+    });
+
+    it('should authenticate device using case-insensitive Authorization: bearer <token>', async () => {
+      const timestamp = new Date(Date.now() - 400).toISOString();
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('Authorization', `bearer ${deviceApiKey}`)
+        .send({
+          device_id: testDeviceId,
+          seq: 602,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 32.0,
+          gps_utc: timestamp,
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.latestLocationUpdated).toBe(true);
+    });
+
+    it('should authenticate device using body apiKey or api_key', async () => {
+      const timestamp = new Date(Date.now() - 300).toISOString();
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .send({
+          device_id: testDeviceId,
+          api_key: deviceApiKey,
+          seq: 603,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 40.0,
+          gps_utc: timestamp,
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.data.latestLocationUpdated).toBe(true);
+    });
+
+    it('should reject location ingestion when API key is empty or whitespace-only', async () => {
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', '   ')
+        .send({
+          device_id: testDeviceId,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 20,
+          gps_utc: new Date().toISOString(),
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error?.code).toBe('DEVICE_AUTH_REQUIRED');
+    });
+
+    it('should reject unauthorized cross-device credential usage (Device A key with Device B ID)', async () => {
+      // Register Device B
+      const deviceBRes = await request(app)
+        .post('/api/v1/devices')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          deviceId: 'ESP32_002',
+          name: 'Secondary Fleet Truck',
+        });
+      expect(deviceBRes.status).toBe(201);
+
+      // Attempt to access Device B using Device A's key
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey) // Device A's key
+        .send({
+          device_id: 'ESP32_002', // Device B's ID
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 30,
+          gps_utc: new Date().toISOString(),
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error?.code).toBe('INVALID_DEVICE_CREDENTIALS');
+    });
+
+    it('should reject request when x-device-id header and body device_id conflict', async () => {
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .set('x-device-id', 'ESP32_001')
+        .send({
+          device_id: 'ESP32_MISMATCH',
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 25,
+          gps_utc: new Date().toISOString(),
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(403);
+      expect(res.body.success).toBe(false);
+      expect(res.body.error?.code).toBe('DEVICE_ID_MISMATCH');
+    });
+
+    it('should verify actual database persistence in MongoDB Device and LocationHistory collections', async () => {
+      const { Device } = await import('../src/modules/devices/device.model');
+      const { LocationHistory } = await import('../src/modules/locations/locationHistory.model');
+
+      const fixedTime = new Date(Date.now() - 1500);
+      const testSeq = 777;
+
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: testSeq,
+          latitude: 28.5355,
+          longitude: 77.391,
+          speed_kmph: 52.4,
+          gps_utc: fixedTime.toISOString(),
+          fix_valid: true,
+          battery_percent: 74,
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      // Verify persistence directly in Device collection
+      const persistedDevice = await Device.findOne({ deviceId: testDeviceId });
+      expect(persistedDevice).not.toBeNull();
+      expect(persistedDevice!.status).toBe('online');
+      expect(persistedDevice!.batteryPercent).toBe(74);
+      expect(persistedDevice!.lastSeq).toBe(testSeq);
+      expect(persistedDevice!.lastSeenAt).toBeDefined();
+      expect(persistedDevice!.latestLocation).toBeDefined();
+      expect(persistedDevice!.latestLocation!.latitude).toBe(28.5355);
+      expect(persistedDevice!.latestLocation!.longitude).toBe(77.391);
+      expect(persistedDevice!.latestLocation!.speed).toBe(52.4);
+      expect(persistedDevice!.latestLocation!.gpsFixed).toBe(true);
+      expect(new Date(persistedDevice!.latestLocation!.timestamp).getTime()).toBe(fixedTime.getTime());
+
+      // Verify persistence directly in LocationHistory collection
+      const persistedHistory = await LocationHistory.findOne({
+        deviceId: testDeviceId,
+        seq: testSeq,
+      });
+      expect(persistedHistory).not.toBeNull();
+      expect(persistedHistory!.latitude).toBe(28.5355);
+      expect(persistedHistory!.longitude).toBe(77.391);
+      expect(persistedHistory!.speed).toBe(52.4);
+      expect(new Date(persistedHistory!.timestamp).getTime()).toBe(fixedTime.getTime());
+      expect(persistedHistory!.receivedAt).toBeDefined();
+    });
+  });
 });
