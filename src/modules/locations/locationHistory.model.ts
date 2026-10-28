@@ -3,6 +3,7 @@ import { Schema, model, Document, Types } from 'mongoose';
 export interface ILocationHistory extends Document {
   _id: Types.ObjectId;
   deviceId: string;
+  seq?: number | null;
   latitude: number;
   longitude: number;
   speed: number;
@@ -17,6 +18,12 @@ const locationHistorySchema = new Schema<ILocationHistory>(
       required: true,
       trim: true,
       uppercase: true,
+      index: true,
+    },
+    seq: {
+      type: Number,
+      required: false,
+      default: null,
       index: true,
     },
     latitude: {

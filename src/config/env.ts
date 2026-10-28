@@ -15,6 +15,7 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.string().default('60000').transform((val) => parseInt(val, 10)),
   RATE_LIMIT_MAX_REQUESTS: z.string().default('100').transform((val) => parseInt(val, 10)),
   DEVICE_RATE_LIMIT_MAX_REQUESTS: z.string().default('600').transform((val) => parseInt(val, 10)),
+  MAX_GPS_AGE_HOURS: z.string().default('24').transform((val) => parseInt(val, 10)),
   TRUST_PROXY: z
     .string()
     .default('1')

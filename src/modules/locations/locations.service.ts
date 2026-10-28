@@ -4,6 +4,7 @@ import { LocationIngestionInput, LocationHistoryQueryInput } from './locations.s
 import { devicesService } from '../devices/devices.service';
 import { socketService } from '../realtime/socket.service';
 import { logger } from '../../utils/logger';
+import { AppError } from '../../middleware/errorHandler.middleware';
 
 export interface IngestionResult {
   deviceId: string;
@@ -19,16 +20,43 @@ export class LocationsService {
     const receivedAt = new Date();
     const deviceId = device.deviceId;
 
-    // Always update lastSeenAt and batteryPercent for authenticated device
+    // Sequence number deduplication check
+    if (input.seq !== undefined && input.seq !== null) {
+      if (device.lastSeq === input.seq) {
+        throw new AppError(
+          `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
+          409,
+          'DUPLICATE_SEQUENCE_NUMBER',
+          [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
+        );
+      }
+      const existingSeq = await LocationHistory.findOne({
+        deviceId,
+        seq: input.seq,
+      });
+      if (existingSeq) {
+        throw new AppError(
+          `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
+          409,
+          'DUPLICATE_SEQUENCE_NUMBER',
+          [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
+        );
+      }
+      device.lastSeq = input.seq;
+    }
+
+    // Always update lastSeenAt for authenticated device; update battery if provided
     device.lastSeenAt = receivedAt;
-    device.batteryPercent = input.batteryPercent;
+    if (input.batteryPercent !== undefined && input.batteryPercent !== null) {
+      device.batteryPercent = input.batteryPercent;
+    }
     device.status = 'online';
 
     // Broadcast device status update to authorized live tracking subscribers
     socketService.emitDeviceStatus(deviceId, {
       deviceId,
       status: 'online',
-      batteryPercent: input.batteryPercent,
+      batteryPercent: device.batteryPercent ?? undefined,
       lastSeenAt: receivedAt.toISOString(),
       gpsFixed: input.gpsFixed,
     });
@@ -37,7 +65,7 @@ export class LocationsService {
     if (!input.gpsFixed) {
       await device.save();
       logger.info(`Received non-GPS status update for device ${deviceId}`, {
-        batteryPercent: input.batteryPercent,
+        batteryPercent: device.batteryPercent,
         receivedAt,
       });
 
@@ -64,6 +92,7 @@ export class LocationsService {
       try {
         await LocationHistory.create({
           deviceId,
+          seq: input.seq ?? null,
           latitude: input.latitude,
           longitude: input.longitude,
           speed: input.speed,

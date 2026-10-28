@@ -26,9 +26,18 @@ export function errorHandler(
   res: Response,
   _next: NextFunction
 ): void {
+  const context = res.locals?.locationLogContext;
+
   logger.error('Unhandled request error:', err);
 
   if (err instanceof AppError) {
+    if (context) {
+      context.error = {
+        code: err.code || 'APP_ERROR',
+        message: err.message,
+        details: err.details,
+      };
+    }
     sendError(res, err.message, err.statusCode, err.details, err.code);
     return;
   }
@@ -36,33 +45,58 @@ export function errorHandler(
   // Handle Mongoose duplicate key error (E11000)
   if (err.code === 11000) {
     const field = Object.keys(err.keyPattern || {})[0] || 'field';
-    sendError(res, `Duplicate value for ${field}. A record with this value already exists.`, 409, undefined, 'DUPLICATE_KEY');
+    const message = `Duplicate value for ${field}. A record with this value already exists.`;
+    if (context) {
+      context.error = { code: 'DUPLICATE_KEY', message };
+    }
+    sendError(res, message, 409, undefined, 'DUPLICATE_KEY');
     return;
   }
 
   // Handle Mongoose CastError (e.g. invalid ObjectId)
   if (err.name === 'CastError') {
-    sendError(res, `Invalid format for field: ${err.path}`, 400, undefined, 'INVALID_FORMAT');
+    const message = `Invalid format for field: ${err.path}`;
+    if (context) {
+      context.error = { code: 'INVALID_FORMAT', message };
+    }
+    sendError(res, message, 400, undefined, 'INVALID_FORMAT');
     return;
   }
 
   // Handle JWT errors
   if (err.name === 'JsonWebTokenError') {
+    if (context) {
+      context.error = { code: 'INVALID_TOKEN', message: 'Invalid authentication token' };
+    }
     sendError(res, 'Invalid authentication token', 401, undefined, 'INVALID_TOKEN');
     return;
   }
   if (err.name === 'TokenExpiredError') {
+    if (context) {
+      context.error = { code: 'TOKEN_EXPIRED', message: 'Authentication token has expired' };
+    }
     sendError(res, 'Authentication token has expired', 401, undefined, 'TOKEN_EXPIRED');
     return;
   }
 
   // Handle JSON syntax error in request body
   if (err instanceof SyntaxError && 'body' in err) {
-    sendError(res, 'Malformed JSON in request body', 400, undefined, 'BAD_JSON');
+    const message = 'Malformed JSON in request body';
+    if (context) {
+      context.error = { code: 'BAD_JSON', message };
+    }
+    sendError(res, message, 400, undefined, 'BAD_JSON');
     return;
   }
 
   // Fallback internal server error
+  if (context) {
+    context.error = {
+      code: 'INTERNAL_SERVER_ERROR',
+      message: 'Internal server error',
+      stack: err?.stack,
+    };
+  }
   const message = process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message || 'Internal server error';
   sendError(res, message, 500, undefined, 'INTERNAL_SERVER_ERROR');
 }

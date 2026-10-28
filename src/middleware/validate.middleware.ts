@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { ZodSchema } from 'zod';
 import { sendError } from '../utils/apiResponse';
 
-export function validateBody(schema: ZodSchema) {
+export function validateBody(schema: ZodSchema, errorCode: string = 'VALIDATION_FAILED') {
   return (req: Request, res: Response, next: NextFunction): void => {
     const result = schema.safeParse(req.body);
     if (!result.success) {
@@ -11,10 +11,42 @@ export function validateBody(schema: ZodSchema) {
         field: err.path.join('.'),
         message: err.message,
       }));
-      sendError(res, 'Validation error', 400, errorMessages, 'VALIDATION_FAILED');
+
+      const context = res.locals.locationLogContext;
+      if (context) {
+        context.validation = {
+          valid: false,
+          errors: errorMessages,
+        };
+        context.error = {
+          code: errorCode,
+          message: errorMessages[0]?.message || 'Validation error',
+          details: errorMessages,
+        };
+      }
+
+      const summaryMessage = errorMessages.length === 1
+        ? errorMessages[0].message
+        : `Validation failed for ${errorMessages.map((e) => e.field).join(', ')}`;
+
+      sendError(res, summaryMessage, 400, errorMessages, errorCode);
       return;
     }
+
     req.body = result.data;
+
+    const context = res.locals.locationLogContext;
+    if (context) {
+      context.validation = { valid: true };
+      const parsedData = result.data as Record<string, any>;
+      if (parsedData?.deviceId) {
+        context.deviceId = parsedData.deviceId;
+      }
+      if (parsedData?.seq !== undefined) {
+        context.seq = parsedData.seq;
+      }
+    }
+
     next();
   };
 }

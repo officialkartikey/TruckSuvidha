@@ -17,6 +17,7 @@ export interface IDevice extends Document {
   latestLocation?: ILatestLocation | null;
   batteryPercent?: number | null;
   lastSeenAt?: Date | null;
+  lastSeq?: number | null;
   status: 'online' | 'offline';
   createdAt: Date;
   updatedAt: Date;
@@ -70,6 +71,10 @@ const deviceSchema = new Schema<IDevice>(
     },
     lastSeenAt: {
       type: Date,
+      default: null,
+    },
+    lastSeq: {
+      type: Number,
       default: null,
     },
     status: {

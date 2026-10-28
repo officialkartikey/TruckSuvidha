@@ -4,11 +4,25 @@ import { sendSuccess } from '../../utils/apiResponse';
 
 export class LocationsController {
   async ingestLocation(req: Request, res: Response, next: NextFunction): Promise<void> {
+    const context = res.locals.locationLogContext;
     try {
       const device = req.device!;
       const result = await locationsService.processLocation(req.body, device);
+      if (context) {
+        context.db = {
+          success: true,
+          latestLocationUpdated: result.latestLocationUpdated,
+          historySaved: result.historySaved,
+        };
+      }
       sendSuccess(res, result, result.message, 200);
-    } catch (error) {
+    } catch (error: any) {
+      if (context) {
+        context.db = {
+          success: false,
+          error: error?.message || 'Database operation failed',
+        };
+      }
       next(error);
     }
   }

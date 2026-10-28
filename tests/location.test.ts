@@ -79,7 +79,7 @@ describe('Location Ingestion & History Module', () => {
 
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
-    expect(res.body.error?.code).toBe('VALIDATION_FAILED');
+    expect(res.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
   });
 
   it('should successfully ingest a valid location and update device state', async () => {
@@ -292,5 +292,262 @@ describe('Location Ingestion & History Module', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.latestLocationUpdated).toBe(true);
+  });
+
+  // --- ESP32 Specific Production Tests ---
+
+  it('1. should successfully ingest a valid ESP32 payload with snake_case fields and seq', async () => {
+    const timestamp = new Date(Date.now() - 2000).toISOString();
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        seq: 1,
+        latitude: 28.676575,
+        longitude: 77.501905,
+        speed_kmph: 2.54,
+        gps_utc: timestamp,
+        fix_valid: true,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.requestId).toBeDefined();
+    expect(res.body.data.deviceId).toBe(testDeviceId);
+    expect(res.body.data.latestLocationUpdated).toBe(true);
+    expect(res.body.data.historySaved).toBe(true);
+  });
+
+  it('2. should reject payload with missing required fields (e.g. missing latitude or coordinates)', async () => {
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        speed_kmph: 10.5,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
+    expect(res.body.error?.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: expect.stringMatching(/latitude/) }),
+        expect.objectContaining({ field: expect.stringMatching(/longitude/) }),
+      ])
+    );
+  });
+
+  it('3. should reject invalid coordinates (out of range) and invalid field types', async () => {
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        latitude: 'not-a-number',
+        longitude: 200.0, // Invalid longitude (> 180)
+        speed_kmph: -5,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
+  });
+
+  it('4. should reject invalid or stale GPS timestamps and future timestamps', async () => {
+    // 4a. Malformed timestamp
+    const resMalformed = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: 'invalid-date-string',
+        fix_valid: true,
+      });
+
+    expect(resMalformed.status).toBe(400);
+    expect(resMalformed.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
+
+    // 4b. Stale timestamp (older than 24 hours)
+    const staleTime = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
+    const resStale = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: staleTime,
+        fix_valid: true,
+      });
+
+    expect(resStale.status).toBe(400);
+    expect(resStale.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
+    expect(resStale.body.error?.details[0].message).toContain('stale');
+
+    // 4c. Timestamp in future (> 15 minutes)
+    const futureTime = new Date(Date.now() + 2 * 3600 * 1000).toISOString();
+    const resFuture = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: futureTime,
+        fix_valid: true,
+      });
+
+    expect(resFuture.status).toBe(400);
+    expect(resFuture.body.error?.code).toBe('LOCATION_VALIDATION_FAILED');
+    expect(resFuture.body.error?.details[0].message).toContain('future');
+  });
+
+  it('5. should reject unknown device with 404 and unauthorized device with 401', async () => {
+    // 5a. Unknown device (not registered)
+    const resUnknown = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: 'UNKNOWN_DEVICE_999',
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(resUnknown.status).toBe(404);
+    expect(resUnknown.body.error?.code).toBe('DEVICE_NOT_FOUND');
+
+    // 5b. Unauthorized device (invalid API key)
+    const resUnauthorized = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', 'trk_wrong_api_key_xyz')
+      .send({
+        device_id: testDeviceId,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(resUnauthorized.status).toBe(401);
+    expect(resUnauthorized.body.error?.code).toBe('INVALID_DEVICE_CREDENTIALS');
+  });
+
+  it('6. should reject duplicate sequence numbers with HTTP 409', async () => {
+    const time1 = new Date(Date.now() - 4000).toISOString();
+    const time2 = new Date(Date.now() - 3000).toISOString();
+
+    // First request with seq: 100
+    const res1 = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        seq: 100,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 20,
+        gps_utc: time1,
+        fix_valid: true,
+      });
+    expect(res1.status).toBe(200);
+
+    // Duplicate request with the exact same seq: 100
+    const res2 = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        seq: 100,
+        latitude: 28.614,
+        longitude: 77.21,
+        speed_kmph: 22,
+        gps_utc: time2,
+        fix_valid: true,
+      });
+
+    expect(res2.status).toBe(409);
+    expect(res2.body.success).toBe(false);
+    expect(res2.body.error?.code).toBe('DUPLICATE_SEQUENCE_NUMBER');
+  });
+
+  it('7. should handle database validation / persistence failures with HTTP 500 and never return 200', async () => {
+    const { locationsService } = await import('../src/modules/locations/locations.service');
+    const spy = vi.spyOn(locationsService, 'processLocation').mockRejectedValueOnce(new Error('Simulated DB failure'));
+
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        seq: 999,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 15,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error?.code).toBe('INTERNAL_SERVER_ERROR');
+    // Ensure internal stack trace is NOT exposed in HTTP response
+    expect(res.body.stack).toBeUndefined();
+    expect(res.body.error?.stack).toBeUndefined();
+
+    spy.mockRestore();
+  });
+
+  it('8. should return HTTP 400 for malformed JSON request body', async () => {
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('Content-Type', 'application/json')
+      .set('x-device-key', deviceApiKey)
+      .send('{"device_id": "ESP32_001", invalid_json');
+
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error?.code).toBe('BAD_JSON');
+  });
+
+  it('9. should handle unexpected internal errors gracefully without leaking internals', async () => {
+    const { LocationHistory } = await import('../src/modules/locations/locationHistory.model');
+    const spy = vi.spyOn(LocationHistory, 'findOne').mockImplementationOnce(() => {
+      throw new Error('Unexpected fatal crash');
+    });
+
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        device_id: testDeviceId,
+        seq: 555,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 10,
+        gps_utc: new Date().toISOString(),
+        fix_valid: true,
+      });
+
+    expect(res.status).toBe(500);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error?.code).toBe('INTERNAL_SERVER_ERROR');
+    expect(res.body.error?.stack).toBeUndefined();
+
+    spy.mockRestore();
   });
 });

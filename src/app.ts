@@ -1,4 +1,5 @@
 import express, { Application, Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import helmet from 'helmet';
 import cors from 'cors';
 import mongoose from 'mongoose';
@@ -18,6 +19,16 @@ export function createApp(): Application {
   // Setting 'trust proxy' before any rate limiting middleware resolves client IPs correctly
   // from X-Forwarded-For, preventing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and spoofing vulnerabilities.
   app.set('trust proxy', env.TRUST_PROXY);
+
+  // Request ID middleware
+  app.use((req, res, next) => {
+    const rawId = req.headers['x-request-id'];
+    const requestId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : randomUUID();
+    req.requestId = requestId;
+    res.locals.requestId = requestId;
+    res.setHeader('x-request-id', requestId);
+    next();
+  });
 
   // Basic security headers
   app.use(helmet());
