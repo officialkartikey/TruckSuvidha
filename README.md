@@ -590,9 +590,11 @@ The following production-ready example demonstrates:
 Preferences preferences;
 String deviceId;
 String deviceApiKey;
+String sessionId; // Generated uniquely per device boot session
 String serverUrl = "https://your-service-name.onrender.com/api/v1/device/location";
 
-uint32_t sequenceNumber = 1;
+// Using RTC_DATA_ATTR preserves the sequence counter across deep sleep / software resets
+RTC_DATA_ATTR uint32_t sequenceNumber = 1;
 
 /**
  * Loads device credentials securely from ESP32 NVS flash.
@@ -609,7 +611,10 @@ bool loadDeviceCredentials() {
     return false;
   }
 
-  Serial.printf("[INFO] Loaded device credentials for Device ID: %s\n", deviceId.c_str());
+  // Generate a unique session ID for this boot cycle
+  sessionId = String(esp_random(), HEX) + "-" + String(millis());
+
+  Serial.printf("[INFO] Loaded device credentials for Device ID: %s (Session: %s)\n", deviceId.c_str(), sessionId.c_str());
   return true;
 }
 
@@ -654,6 +659,7 @@ bool sendLocationTelemetry(double latitude, double longitude, float speedKmph,
   // Construct JSON payload
   StaticJsonDocument<384> doc;
   doc["device_id"] = deviceId;
+  doc["session_id"] = sessionId;
   doc["seq"] = sequenceNumber;
   doc["latitude"] = latitude;
   doc["longitude"] = longitude;

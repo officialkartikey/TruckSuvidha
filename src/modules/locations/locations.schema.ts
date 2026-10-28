@@ -16,6 +16,7 @@ const normalizeLocationInput = (raw: unknown) => {
   const timestamp = obj.timestamp ?? obj.gps_utc;
   const batteryPercent = obj.batteryPercent ?? obj.battery_percent;
   const seq = obj.seq ?? obj.sequence_number ?? obj.sequenceNumber;
+  const sessionId = obj.sessionId ?? obj.session_id ?? obj.bootId ?? obj.boot_id;
   const apiKey = obj.apiKey ?? obj.api_key;
 
   return {
@@ -28,6 +29,7 @@ const normalizeLocationInput = (raw: unknown) => {
     timestamp,
     batteryPercent,
     seq,
+    sessionId,
     apiKey,
   };
 };
@@ -106,6 +108,12 @@ export const locationIngestionSchema = z.preprocess(
       .number({ message: 'seq must be a non-negative integer' })
       .int('seq must be an integer')
       .min(0, 'seq must be greater than or equal to 0')
+      .optional()
+      .nullable(),
+    sessionId: z
+      .string()
+      .trim()
+      .max(100)
       .optional()
       .nullable(),
     apiKey: z.string().optional(),

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { LocationHistory, ILocationHistory } from './locationHistory.model';
 import { IDevice, Device } from '../devices/device.model';
 import { LocationIngestionInput, LocationHistoryQueryInput } from './locations.schema';
@@ -19,30 +20,133 @@ export class LocationsService {
   async processLocation(input: LocationIngestionInput, device: IDevice): Promise<IngestionResult> {
     const receivedAt = new Date();
     const deviceId = device.deviceId;
+    const inputTimestampMs = input.timestamp.getTime();
 
-    // Sequence number deduplication check
+    // 1. Idempotency Check: check if this exact timestamp was already recorded for this device
+    const existingHistory = await LocationHistory.findOne({
+      deviceId,
+      timestamp: input.timestamp,
+    });
+
+    if (existingHistory) {
+      // Check if seq is identical (or not provided)
+      const isSameSeq =
+        input.seq === undefined ||
+        input.seq === null ||
+        existingHistory.seq === null ||
+        existingHistory.seq === undefined ||
+        existingHistory.seq === input.seq;
+
+      if (isSameSeq) {
+        logger.info(
+          `Idempotent duplicate retry acknowledged for device ${deviceId} at ${input.timestamp.toISOString()}`
+        );
+        return {
+          deviceId,
+          gpsFixed: input.gpsFixed,
+          receivedAt: existingHistory.receivedAt || receivedAt,
+          latestLocationUpdated: false,
+          historySaved: false,
+          message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
+        };
+      }
+    }
+
+    // 2. Sequence Number & Session Tracking
+    let isNewSession = false;
+    const currentLatestTimestamp = device.latestLocation?.timestamp
+      ? new Date(device.latestLocation.timestamp).getTime()
+      : null;
+
     if (input.seq !== undefined && input.seq !== null) {
-      if (device.lastSeq === input.seq) {
-        throw new AppError(
-          `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
-          409,
-          'DUPLICATE_SEQUENCE_NUMBER',
-          [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
+      if (input.sessionId) {
+        if (!device.sessionId || device.sessionId !== input.sessionId) {
+          isNewSession = true;
+          device.sessionId = input.sessionId;
+          device.sessionStartTime = input.timestamp;
+          device.lastSeq = input.seq;
+          logger.info(
+            `Device ${deviceId} started new session ${input.sessionId} at seq ${input.seq}`
+          );
+        }
+      } else if (
+        device.lastSeq !== null &&
+        device.lastSeq !== undefined &&
+        input.seq < device.lastSeq &&
+        currentLatestTimestamp !== null &&
+        inputTimestampMs >= currentLatestTimestamp
+      ) {
+        // Reboot / counter reset detected!
+        // The sequence number decreased while time advanced or stayed current.
+        isNewSession = true;
+        device.sessionId = randomUUID();
+        device.sessionStartTime = input.timestamp;
+        device.lastSeq = input.seq;
+        logger.info(
+          `Device ${deviceId} reboot / counter reset detected (seq reset from ${device.lastSeq} to ${input.seq}). Started new tracking session.`
         );
       }
-      const existingSeq = await LocationHistory.findOne({
-        deviceId,
-        seq: input.seq,
-      });
-      if (existingSeq) {
-        throw new AppError(
-          `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
-          409,
-          'DUPLICATE_SEQUENCE_NUMBER',
-          [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
-        );
+
+      if (!isNewSession) {
+        // If seq equals lastSeq:
+        if (device.lastSeq === input.seq) {
+          // If the timestamp matches current latest location, it's an idempotent retry of latest location
+          if (currentLatestTimestamp !== null && inputTimestampMs === currentLatestTimestamp) {
+            logger.info(`Idempotent duplicate retry of latest location for device ${deviceId} (seq: ${input.seq})`);
+            return {
+              deviceId,
+              gpsFixed: input.gpsFixed,
+              receivedAt: device.lastSeenAt || receivedAt,
+              latestLocationUpdated: false,
+              historySaved: false,
+              message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
+            };
+          }
+
+          // Otherwise, device reused the same sequence number for a different timestamp!
+          throw new AppError(
+            `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
+            409,
+            'DUPLICATE_SEQUENCE_NUMBER',
+            [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
+          );
+        }
+
+        // Query if this sequence number was already recorded within the active session
+        const historyQuery: Record<string, unknown> = {
+          deviceId,
+          seq: input.seq,
+        };
+        if (device.sessionStartTime) {
+          historyQuery.timestamp = { $gte: device.sessionStartTime };
+        }
+        if (device.sessionId) {
+          historyQuery.sessionId = device.sessionId;
+        }
+
+        const existingSeq = await LocationHistory.findOne(historyQuery);
+        if (existingSeq) {
+          if (existingSeq.timestamp.getTime() === inputTimestampMs) {
+            // Idempotent retry of a previously recorded point
+            return {
+              deviceId,
+              gpsFixed: input.gpsFixed,
+              receivedAt: existingSeq.receivedAt || receivedAt,
+              latestLocationUpdated: false,
+              historySaved: false,
+              message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
+            };
+          }
+
+          // Duplicate sequence number used for a different timestamp in this session
+          throw new AppError(
+            `Duplicate sequence number: seq ${input.seq} has already been processed for device ${deviceId}`,
+            409,
+            'DUPLICATE_SEQUENCE_NUMBER',
+            [{ field: 'seq', message: `Sequence number ${input.seq} already processed` }]
+          );
+        }
       }
-      device.lastSeq = input.seq;
     }
 
     // Always update lastSeenAt for authenticated device; update battery if provided
@@ -52,21 +156,29 @@ export class LocationsService {
     }
     device.status = 'online';
 
-    // Broadcast device status update to authorized live tracking subscribers
-    socketService.emitDeviceStatus(deviceId, {
-      deviceId,
-      status: 'online',
-      batteryPercent: device.batteryPercent ?? undefined,
-      lastSeenAt: receivedAt.toISOString(),
-      gpsFixed: input.gpsFixed,
-    });
-
     // Case 1: gpsFixed is false — accept status update without overwriting valid coordinates
     if (!input.gpsFixed) {
+      if (input.seq !== undefined && input.seq !== null) {
+        if (device.lastSeq === null || device.lastSeq === undefined || isNewSession) {
+          device.lastSeq = input.seq;
+        } else {
+          device.lastSeq = Math.max(device.lastSeq, input.seq);
+        }
+      }
+
       await device.save();
       logger.info(`Received non-GPS status update for device ${deviceId}`, {
         batteryPercent: device.batteryPercent,
         receivedAt,
+      });
+
+      // Broadcast device status update ONLY AFTER DB save succeeds
+      socketService.emitDeviceStatus(deviceId, {
+        deviceId,
+        status: 'online',
+        batteryPercent: device.batteryPercent ?? undefined,
+        lastSeenAt: receivedAt.toISOString(),
+        gpsFixed: false,
       });
 
       return {
@@ -82,17 +194,12 @@ export class LocationsService {
     // Case 2: gpsFixed is true — validate, deduplicate, and process GPS fix
     let historySaved = false;
 
-    // Deduplication check: check if a record with the exact deviceId and timestamp already exists
-    const existingHistory = await LocationHistory.findOne({
-      deviceId,
-      timestamp: input.timestamp,
-    });
-
     if (!existingHistory) {
       try {
         await LocationHistory.create({
           deviceId,
           seq: input.seq ?? null,
+          sessionId: device.sessionId ?? null,
           latitude: input.latitude,
           longitude: input.longitude,
           speed: input.speed,
@@ -132,8 +239,34 @@ export class LocationsService {
         gpsFixed: true,
       };
       latestLocationUpdated = true;
+    } else {
+      logger.info(
+        `Buffered/delayed location for ${deviceId} saved to history but did not overwrite newer latest location`
+      );
+    }
 
-      // Broadcast real-time location update to authorized room subscribers
+    // Update lastSeq monotonically for newer/equal locations or new sessions
+    if (input.seq !== undefined && input.seq !== null) {
+      if (device.lastSeq === null || device.lastSeq === undefined || isNewSession) {
+        device.lastSeq = input.seq;
+      } else if (isNewerOrEqual) {
+        device.lastSeq = Math.max(device.lastSeq, input.seq);
+      }
+    }
+
+    // Persist device state in MongoDB
+    await device.save();
+
+    // Broadcast Socket.IO status and location updates ONLY AFTER DB persistence succeeds
+    socketService.emitDeviceStatus(deviceId, {
+      deviceId,
+      status: 'online',
+      batteryPercent: device.batteryPercent ?? undefined,
+      lastSeenAt: receivedAt.toISOString(),
+      gpsFixed: true,
+    });
+
+    if (latestLocationUpdated) {
       socketService.emitLocationUpdate(deviceId, {
         deviceId,
         latitude: input.latitude,
@@ -143,13 +276,7 @@ export class LocationsService {
         gpsFixed: true,
         receivedAt: receivedAt.toISOString(),
       });
-    } else {
-      logger.info(
-        `Buffered/delayed location for ${deviceId} saved to history but did not overwrite newer latest location`
-      );
     }
-
-    await device.save();
 
     return {
       deviceId,

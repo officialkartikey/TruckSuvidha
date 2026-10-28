@@ -18,6 +18,8 @@ export interface IDevice extends Document {
   batteryPercent?: number | null;
   lastSeenAt?: Date | null;
   lastSeq?: number | null;
+  sessionId?: string | null;
+  sessionStartTime?: Date | null;
   status: 'online' | 'offline';
   createdAt: Date;
   updatedAt: Date;
@@ -75,6 +77,15 @@ const deviceSchema = new Schema<IDevice>(
     },
     lastSeq: {
       type: Number,
+      default: null,
+    },
+    sessionId: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    sessionStartTime: {
+      type: Date,
       default: null,
     },
     status: {

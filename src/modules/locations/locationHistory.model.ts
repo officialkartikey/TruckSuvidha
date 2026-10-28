@@ -4,6 +4,7 @@ export interface ILocationHistory extends Document {
   _id: Types.ObjectId;
   deviceId: string;
   seq?: number | null;
+  sessionId?: string | null;
   latitude: number;
   longitude: number;
   speed: number;
@@ -22,6 +23,12 @@ const locationHistorySchema = new Schema<ILocationHistory>(
     },
     seq: {
       type: Number,
+      required: false,
+      default: null,
+      index: true,
+    },
+    sessionId: {
+      type: String,
       required: false,
       default: null,
       index: true,

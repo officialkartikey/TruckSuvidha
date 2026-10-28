@@ -732,4 +732,321 @@ describe('Location Ingestion & History Module', () => {
       expect(persistedHistory!.receivedAt).toBeDefined();
     });
   });
+
+  describe('Sequence Number Management, Idempotency & Reboot Tests', () => {
+    it('should handle repeated identical device ID + sequence requests idempotently without inserting duplicates', async () => {
+      const { LocationHistory } = await import('../src/modules/locations/locationHistory.model');
+      const time = new Date(Date.now() - 3000).toISOString();
+      const payload = {
+        device_id: testDeviceId,
+        seq: 101,
+        latitude: 28.6139,
+        longitude: 77.209,
+        speed_kmph: 15.0,
+        gps_utc: time,
+        fix_valid: true,
+        battery_percent: 85,
+      };
+
+      // 1. First transmission
+      const res1 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send(payload);
+
+      expect(res1.status).toBe(200);
+      expect(res1.body.success).toBe(true);
+      expect(res1.body.data.historySaved).toBe(true);
+
+      // 2. Exact identical retry (same deviceId, seq, and timestamp)
+      const res2 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send(payload);
+
+      expect(res2.status).toBe(200);
+      expect(res2.body.success).toBe(true);
+      expect(res2.body.data.historySaved).toBe(false);
+      expect(res2.body.data.latestLocationUpdated).toBe(false);
+      expect(res2.body.message).toContain('Duplicate telemetry retry acknowledged');
+
+      // Verify only 1 document exists in LocationHistory
+      const count = await LocationHistory.countDocuments({
+        deviceId: testDeviceId,
+        seq: 101,
+      });
+      expect(count).toBe(1);
+    });
+
+    it('should accept the same sequence number from different devices independently', async () => {
+      // Register Device B under admin
+      const devBRes = await request(app)
+        .post('/api/v1/devices')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({
+          deviceId: 'DEVICE_B_SCOPED',
+          name: 'Device B',
+        });
+      expect(devBRes.status).toBe(201);
+      const devBKey = devBRes.body.data.apiKey;
+
+      const timeA = new Date(Date.now() - 2000).toISOString();
+      const timeB = new Date(Date.now() - 1900).toISOString();
+
+      // Device A sends seq: 201
+      const resA = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 201,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 20,
+          gps_utc: timeA,
+          fix_valid: true,
+        });
+      expect(resA.status).toBe(200);
+
+      // Device B sends the exact same seq: 201
+      const resB = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', devBKey)
+        .send({
+          device_id: 'DEVICE_B_SCOPED',
+          seq: 201,
+          latitude: 19.076,
+          longitude: 72.8777,
+          speed_kmph: 30,
+          gps_utc: timeB,
+          fix_valid: true,
+        });
+      expect(resB.status).toBe(200);
+      expect(resB.body.data.deviceId).toBe('DEVICE_B_SCOPED');
+    });
+
+    it('should successfully process new sequential location updates', async () => {
+      const { Device } = await import('../src/modules/devices/device.model');
+
+      const time1 = new Date(Date.now() - 3000).toISOString();
+      const time2 = new Date(Date.now() - 2000).toISOString();
+      const time3 = new Date(Date.now() - 1000).toISOString();
+
+      const res1 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 1,
+          latitude: 28.61,
+          longitude: 77.20,
+          speed_kmph: 10,
+          gps_utc: time1,
+          fix_valid: true,
+        });
+      expect(res1.status).toBe(200);
+
+      const res2 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 2,
+          latitude: 28.62,
+          longitude: 77.21,
+          speed_kmph: 15,
+          gps_utc: time2,
+          fix_valid: true,
+        });
+      expect(res2.status).toBe(200);
+
+      const res3 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 3,
+          latitude: 28.63,
+          longitude: 77.22,
+          speed_kmph: 20,
+          gps_utc: time3,
+          fix_valid: true,
+        });
+      expect(res3.status).toBe(200);
+
+      const dev = await Device.findOne({ deviceId: testDeviceId });
+      expect(dev!.lastSeq).toBe(3);
+      expect(dev!.latestLocation!.latitude).toBe(28.63);
+    });
+
+    it('should handle out-of-order sequence numbers from delayed buffered uploads without overwriting latestLocation or corrupting lastSeq', async () => {
+      const { Device } = await import('../src/modules/devices/device.model');
+
+      const timeLive = new Date(Date.now() - 1000).toISOString();
+      const timeBuffered = new Date(Date.now() - 10000).toISOString();
+
+      // 1. Live point arrives first with seq: 50
+      const resLive = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 50,
+          latitude: 28.7041,
+          longitude: 77.1025,
+          speed_kmph: 60,
+          gps_utc: timeLive,
+          fix_valid: true,
+        });
+      expect(resLive.status).toBe(200);
+      expect(resLive.body.data.latestLocationUpdated).toBe(true);
+
+      // 2. Older buffered point arrives with seq: 40 and older timestamp
+      const resBuffered = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 40,
+          latitude: 26.8467,
+          longitude: 80.9462,
+          speed_kmph: 45,
+          gps_utc: timeBuffered,
+          fix_valid: true,
+        });
+      expect(resBuffered.status).toBe(200);
+      expect(resBuffered.body.data.historySaved).toBe(true);
+      expect(resBuffered.body.data.latestLocationUpdated).toBe(false);
+
+      // Verify device state: latestLocation remains the live point, lastSeq remains 50
+      const dev = await Device.findOne({ deviceId: testDeviceId });
+      expect(dev!.latestLocation!.latitude).toBe(28.7041);
+      expect(dev!.lastSeq).toBe(50);
+    });
+
+    it('should handle ESP32 reboot and sequence counter reset without returning duplicate sequence error', async () => {
+      const { Device } = await import('../src/modules/devices/device.model');
+
+      const timePast = new Date(Date.now() - 5000).toISOString();
+      const timeReboot1 = new Date(Date.now() - 2000).toISOString();
+      const timeReboot2 = new Date(Date.now() - 1000).toISOString();
+
+      // Device runs before reboot and reaches seq: 80
+      const resPast = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 80,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 25,
+          gps_utc: timePast,
+          fix_valid: true,
+        });
+      expect(resPast.status).toBe(200);
+
+      // Device reboots! Sequence resets to 1, but timestamp is newer
+      const resReboot1 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 1,
+          latitude: 28.6145,
+          longitude: 77.210,
+          speed_kmph: 5,
+          gps_utc: timeReboot1,
+          fix_valid: true,
+        });
+
+      // Must succeed with 200 (NOT fail with 409!)
+      expect(resReboot1.status).toBe(200);
+      expect(resReboot1.body.success).toBe(true);
+      expect(resReboot1.body.data.latestLocationUpdated).toBe(true);
+
+      // Follow-up sequential point after reboot
+      const resReboot2 = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 2,
+          latitude: 28.6150,
+          longitude: 77.211,
+          speed_kmph: 12,
+          gps_utc: timeReboot2,
+          fix_valid: true,
+        });
+      expect(resReboot2.status).toBe(200);
+
+      const dev = await Device.findOne({ deviceId: testDeviceId });
+      expect(dev!.lastSeq).toBe(2);
+      expect(dev!.latestLocation!.latitude).toBe(28.6150);
+    });
+
+    it('should handle concurrent duplicate requests safely without crashing or creating duplicates', async () => {
+      const { LocationHistory } = await import('../src/modules/locations/locationHistory.model');
+      const fixedTime = new Date(Date.now() - 1200).toISOString();
+      const payload = {
+        device_id: testDeviceId,
+        seq: 555,
+        latitude: 28.65,
+        longitude: 77.25,
+        speed_kmph: 30,
+        gps_utc: fixedTime,
+        fix_valid: true,
+      };
+
+      // Dispatch 2 concurrent identical requests
+      const [res1, res2] = await Promise.all([
+        request(app).post('/api/v1/device/location').set('x-device-key', deviceApiKey).send(payload),
+        request(app).post('/api/v1/device/location').set('x-device-key', deviceApiKey).send(payload),
+      ]);
+
+      expect(res1.status).toBe(200);
+      expect(res2.status).toBe(200);
+
+      // Exactly 1 history entry should exist
+      const count = await LocationHistory.countDocuments({
+        deviceId: testDeviceId,
+        seq: 555,
+      });
+      expect(count).toBe(1);
+    });
+
+    it('should avoid emitting Socket.IO location updates if database persistence fails', async () => {
+      const { Device } = await import('../src/modules/devices/device.model');
+      const { socketService } = await import('../src/modules/realtime/socket.service');
+
+      const emitLocationSpy = vi.spyOn(socketService, 'emitLocationUpdate');
+      const emitStatusSpy = vi.spyOn(socketService, 'emitDeviceStatus');
+
+      // Mock Device.prototype.save to reject
+      const saveSpy = vi.spyOn(Device.prototype, 'save').mockRejectedValueOnce(new Error('Simulated Mongoose Save Failure'));
+
+      const res = await request(app)
+        .post('/api/v1/device/location')
+        .set('x-device-key', deviceApiKey)
+        .send({
+          device_id: testDeviceId,
+          seq: 999,
+          latitude: 28.6139,
+          longitude: 77.209,
+          speed_kmph: 15,
+          gps_utc: new Date(Date.now() - 500).toISOString(),
+          fix_valid: true,
+        });
+
+      expect(res.status).toBe(500);
+      expect(res.body.success).toBe(false);
+
+      // Verify that no location update was broadcast to subscribed clients
+      expect(emitLocationSpy).not.toHaveBeenCalled();
+
+      saveSpy.mockRestore();
+      emitLocationSpy.mockRestore();
+      emitStatusSpy.mockRestore();
+    });
+  });
 });

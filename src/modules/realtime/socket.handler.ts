@@ -9,7 +9,16 @@ interface AuthenticatedSocket extends Socket {
   };
 }
 
+const HANDLERS_ATTACHED = Symbol.for('trucksuvidha.socketHandlersAttached');
+
 export function setupSocketHandlers(io: SocketIOServer): void {
+  // Prevent duplicate middleware and listener registration on the same Socket.IO instance
+  if ((io as any)[HANDLERS_ATTACHED]) {
+    logger.warn('setupSocketHandlers called more than once on the same Socket.IO instance; skipping duplicate registration');
+    return;
+  }
+  (io as any)[HANDLERS_ATTACHED] = true;
+
   // Authentication middleware for Socket.IO connections
   io.use((socket: AuthenticatedSocket, next) => {
     try {
@@ -54,9 +63,14 @@ export function setupSocketHandlers(io: SocketIOServer): void {
         const device = await devicesService.getDevice(admin.id, deviceId);
 
         const room = `device:${deviceId}`;
-        socket.join(room);
+        const isAlreadySubscribed = socket.rooms.has(room);
 
-        logger.info(`Admin ${admin.email} subscribed to ${room}`);
+        if (!isAlreadySubscribed) {
+          socket.join(room);
+          logger.info(`Admin ${admin.email} subscribed to ${room}`);
+        } else {
+          logger.debug(`Admin ${admin.email} already subscribed to ${room} (idempotent request)`);
+        }
 
         socket.emit('tracking:subscribed', {
           deviceId,
@@ -93,8 +107,14 @@ export function setupSocketHandlers(io: SocketIOServer): void {
       }
     });
 
+    socket.on('error', (err: any) => {
+      logger.warn(`Socket error for admin ${admin.email} (${socket.id}):`, { error: err?.message || String(err) });
+    });
+
     socket.on('disconnect', (reason) => {
-      logger.info(`Socket disconnected: ${socket.id} (${reason})`);
+      logger.info(`Socket disconnected: ${socket.id} (admin: ${admin.email}, reason: ${reason})`);
+      socket.removeAllListeners('tracking:subscribe');
+      socket.removeAllListeners('tracking:unsubscribe');
     });
   });
 }

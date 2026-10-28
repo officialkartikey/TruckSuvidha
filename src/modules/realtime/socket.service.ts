@@ -23,6 +23,9 @@ class SocketService {
   private io: SocketIOServer | null = null;
 
   public init(io: SocketIOServer): void {
+    if (this.io === io) {
+      return;
+    }
     this.io = io;
     logger.info('Socket.IO service initialized');
   }

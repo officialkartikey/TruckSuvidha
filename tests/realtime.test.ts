@@ -211,4 +211,77 @@ describe('Socket.IO Live Tracking Module', () => {
     clientSubscriber.disconnect();
     clientUnsubscribed.disconnect();
   });
+
+  it('should handle repeated subscriptions to the same device idempotently', async () => {
+    const client = ClientIO(`http://localhost:${serverPort}`, {
+      auth: { token: adminToken1 },
+      transports: ['websocket'],
+    });
+
+    let subscribedEventCount = 0;
+    client.on('tracking:subscribed', (data) => {
+      expect(data.deviceId).toBe(deviceId1);
+      subscribedEventCount++;
+    });
+
+    // First subscription
+    client.emit('tracking:subscribe', { deviceId: deviceId1 });
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Duplicate subscription to the same room
+    client.emit('tracking:subscribe', { deviceId: deviceId1 });
+    await new Promise((r) => setTimeout(r, 100));
+
+    expect(subscribedEventCount).toBe(2);
+    client.disconnect();
+  });
+
+  it('should handle socket reconnects cleanly', async () => {
+    const client = ClientIO(`http://localhost:${serverPort}`, {
+      auth: { token: adminToken1 },
+      transports: ['websocket'],
+      autoConnect: false,
+    });
+
+    // First connection
+    const connect1 = new Promise<boolean>((resolve) => {
+      client.once('connect', () => resolve(true));
+    });
+    client.connect();
+    expect(await connect1).toBe(true);
+
+    // Disconnect
+    client.disconnect();
+    expect(client.connected).toBe(false);
+
+    // Reconnect
+    const connect2 = new Promise<boolean>((resolve) => {
+      client.once('connect', () => resolve(true));
+    });
+    client.connect();
+    expect(await connect2).toBe(true);
+
+    client.disconnect();
+  });
+
+  it('should clean up socket subscriptions and state on disconnect', async () => {
+    const client = ClientIO(`http://localhost:${serverPort}`, {
+      auth: { token: adminToken1 },
+      transports: ['websocket'],
+    });
+
+    await new Promise<void>((resolve) => {
+      client.on('tracking:subscribed', () => resolve());
+      client.emit('tracking:subscribe', { deviceId: deviceId1 });
+    });
+
+    const disconnectPromise = new Promise<string>((resolve) => {
+      client.on('disconnect', (reason) => resolve(reason));
+    });
+
+    client.disconnect();
+    const reason = await disconnectPromise;
+    expect(reason).toBe('io client disconnect');
+    expect(client.connected).toBe(false);
+  });
 });

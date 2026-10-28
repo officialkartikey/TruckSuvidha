@@ -23,8 +23,9 @@ async function bootstrap() {
         methods: ['GET', 'POST'],
         credentials: true,
       },
-      pingTimeout: 30000,
-      pingInterval: 10000,
+      pingTimeout: 20000,
+      pingInterval: 25000,
+      transports: ['websocket', 'polling'],
     });
 
     socketService.init(io);
