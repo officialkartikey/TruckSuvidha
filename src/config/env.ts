@@ -15,6 +15,17 @@ const envSchema = z.object({
   RATE_LIMIT_WINDOW_MS: z.string().default('60000').transform((val) => parseInt(val, 10)),
   RATE_LIMIT_MAX_REQUESTS: z.string().default('100').transform((val) => parseInt(val, 10)),
   DEVICE_RATE_LIMIT_MAX_REQUESTS: z.string().default('600').transform((val) => parseInt(val, 10)),
+  TRUST_PROXY: z
+    .string()
+    .default('1')
+    .transform((val) => {
+      if (/^\d+$/.test(val)) {
+        return parseInt(val, 10);
+      }
+      if (val.toLowerCase() === 'true') return true;
+      if (val.toLowerCase() === 'false') return false;
+      return val;
+    }),
 });
 
 const parsedEnv = envSchema.safeParse(process.env);

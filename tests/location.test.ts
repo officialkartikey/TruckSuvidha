@@ -251,4 +251,46 @@ describe('Location Ingestion & History Module', () => {
 
     expect(historyRes.body.data.length).toBe(2);
   });
+
+  it('should successfully ingest location behind reverse proxy with X-Forwarded-For without ERR_ERL_UNEXPECTED_X_FORWARDED_FOR', async () => {
+    const timestamp = new Date().toISOString();
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .set('X-Forwarded-For', '203.0.113.195')
+      .send({
+        deviceId: testDeviceId,
+        timestamp,
+        latitude: 19.076,
+        longitude: 72.8777,
+        speed: 35.0,
+        gpsFixed: true,
+        batteryPercent: 92,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.latestLocationUpdated).toBe(true);
+  });
+
+  it('should safely process location ingestion when X-Forwarded-For contains multiple proxy hops / spoofed IPs', async () => {
+    const timestamp = new Date(Date.now() + 1000).toISOString();
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .set('X-Forwarded-For', '198.51.100.42, 203.0.113.195')
+      .send({
+        deviceId: testDeviceId,
+        timestamp,
+        latitude: 19.078,
+        longitude: 72.879,
+        speed: 40.0,
+        gpsFixed: true,
+        batteryPercent: 91,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.latestLocationUpdated).toBe(true);
+  });
 });

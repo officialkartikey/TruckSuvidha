@@ -13,6 +13,12 @@ import { logger } from './utils/logger';
 export function createApp(): Application {
   const app = express();
 
+  // Configure Express proxy trust for reverse proxies (Render, load balancers).
+  // Render routes traffic through 1 reverse proxy hop to the container.
+  // Setting 'trust proxy' before any rate limiting middleware resolves client IPs correctly
+  // from X-Forwarded-For, preventing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR and spoofing vulnerabilities.
+  app.set('trust proxy', env.TRUST_PROXY);
+
   // Basic security headers
   app.use(helmet());
 
