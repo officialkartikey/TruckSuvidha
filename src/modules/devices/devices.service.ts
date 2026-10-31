@@ -16,10 +16,16 @@ export interface FormattedDevice {
     speed: number;
     timestamp: Date;
     gpsFixed: boolean;
+    accuracy?: number | null;
+    source?: string | null;
   } | null;
   batteryPercent?: number | null;
   lastSeenAt?: Date | null;
   status: 'online' | 'offline';
+  smsSenderNumber?: string | null;
+  smsEnabled: boolean;
+  lastSmsSequence?: number | null;
+  lastSmsReceivedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -48,10 +54,16 @@ export class DevicesService {
         speed: device.latestLocation.speed,
         timestamp: device.latestLocation.timestamp,
         gpsFixed: device.latestLocation.gpsFixed,
+        accuracy: device.latestLocation.accuracy ?? null,
+        source: device.latestLocation.source ?? null,
       } : null,
       batteryPercent: device.batteryPercent ?? null,
       lastSeenAt: device.lastSeenAt ?? null,
       status: computedStatus,
+      smsSenderNumber: device.smsSenderNumber ?? null,
+      smsEnabled: device.smsEnabled ?? false,
+      lastSmsSequence: device.lastSmsSequence ?? null,
+      lastSmsReceivedAt: device.lastSmsReceivedAt ?? null,
       createdAt: device.createdAt,
       updatedAt: device.updatedAt,
     };
@@ -79,6 +91,8 @@ export class DevicesService {
       name: input.name,
       apiKeyHash,
       status: 'offline',
+      smsSenderNumber: input.smsSenderNumber ?? null,
+      smsEnabled: input.smsEnabled ?? false,
     });
 
     return {
@@ -125,6 +139,14 @@ export class DevicesService {
 
     if (input.name) {
       device.name = input.name;
+    }
+
+    if (input.smsSenderNumber !== undefined) {
+      device.smsSenderNumber = input.smsSenderNumber;
+    }
+
+    if (input.smsEnabled !== undefined) {
+      device.smsEnabled = input.smsEnabled;
     }
 
     await device.save();

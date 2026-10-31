@@ -9,6 +9,8 @@ export interface LocationBroadcast {
   timestamp: string;
   gpsFixed: boolean;
   receivedAt: string;
+  accuracy?: number | null;
+  source?: string | null;
 }
 
 export interface DeviceStatusBroadcast {
@@ -40,7 +42,8 @@ class SocketService {
     }
     const room = `device:${deviceId.toUpperCase()}`;
     this.io.to(room).emit('tracking:location', data);
-    logger.debug(`Emitted tracking:location to room ${room}`, { deviceId });
+    this.io.to(room).emit('device:location:update', data);
+    logger.debug(`Emitted tracking:location & device:location:update to room ${room}`, { deviceId });
   }
 
   public emitDeviceStatus(deviceId: string, data: DeviceStatusBroadcast): void {

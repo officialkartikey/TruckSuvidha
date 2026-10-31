@@ -6,6 +6,8 @@ export interface ILatestLocation {
   speed: number;
   timestamp: Date;
   gpsFixed: boolean;
+  accuracy?: number | null;
+  source?: 'GNSS' | 'CELLULAR' | string | null;
 }
 
 export interface IDevice extends Document {
@@ -21,6 +23,10 @@ export interface IDevice extends Document {
   sessionId?: string | null;
   sessionStartTime?: Date | null;
   status: 'online' | 'offline';
+  smsSenderNumber?: string | null;
+  smsEnabled: boolean;
+  lastSmsSequence?: number | null;
+  lastSmsReceivedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -32,6 +38,8 @@ const latestLocationSchema = new Schema<ILatestLocation>(
     speed: { type: Number, required: true, default: 0 },
     timestamp: { type: Date, required: true },
     gpsFixed: { type: Boolean, required: true, default: true },
+    accuracy: { type: Number, default: null },
+    source: { type: String, default: null },
   },
   { _id: false }
 );
@@ -92,6 +100,24 @@ const deviceSchema = new Schema<IDevice>(
       type: String,
       enum: ['online', 'offline'],
       default: 'offline',
+    },
+    smsSenderNumber: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    smsEnabled: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    lastSmsSequence: {
+      type: Number,
+      default: null,
+    },
+    lastSmsReceivedAt: {
+      type: Date,
+      default: null,
     },
   },
   {

@@ -9,6 +9,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.middlew
 import { authRoutes } from './modules/auth/auth.routes';
 import { devicesRoutes } from './modules/devices/devices.routes';
 import { deviceLocationRoutes } from './modules/locations/locations.routes';
+import { smsRoutes } from './modules/sms/sms.routes';
 import { logger } from './utils/logger';
 
 export function createApp(): Application {
@@ -77,6 +78,7 @@ export function createApp(): Application {
   app.use('/api/v1/auth', standardRateLimiter, authRoutes);
   app.use('/api/v1/devices', standardRateLimiter, devicesRoutes);
   app.use('/api/v1/device', deviceLocationRoutes);
+  app.use('/api/v1/sms', standardRateLimiter, smsRoutes);
 
   // 404 handler for unknown routes
   app.use(notFoundHandler);

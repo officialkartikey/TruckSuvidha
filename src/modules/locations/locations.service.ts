@@ -205,6 +205,8 @@ export class LocationsService {
           speed: input.speed,
           timestamp: input.timestamp,
           receivedAt,
+          accuracy: null,
+          source: 'GNSS',
         });
         historySaved = true;
       } catch (err: any) {
@@ -237,6 +239,8 @@ export class LocationsService {
         speed: input.speed,
         timestamp: input.timestamp,
         gpsFixed: true,
+        accuracy: null,
+        source: 'GNSS',
       };
       latestLocationUpdated = true;
     } else {
@@ -275,6 +279,8 @@ export class LocationsService {
         timestamp: input.timestamp.toISOString(),
         gpsFixed: true,
         receivedAt: receivedAt.toISOString(),
+        accuracy: null,
+        source: 'GNSS',
       });
     }
 

@@ -10,6 +10,8 @@ export interface ILocationHistory extends Document {
   speed: number;
   timestamp: Date;
   receivedAt: Date;
+  accuracy?: number | null;
+  source?: string | null;
 }
 
 const locationHistorySchema = new Schema<ILocationHistory>(
@@ -60,6 +62,17 @@ const locationHistorySchema = new Schema<ILocationHistory>(
       type: Date,
       required: true,
       default: Date.now,
+      index: true,
+    },
+    accuracy: {
+      type: Number,
+      required: false,
+      default: null,
+    },
+    source: {
+      type: String,
+      required: false,
+      default: 'GNSS',
       index: true,
     },
   },
