@@ -18,6 +18,8 @@ const normalizeLocationInput = (raw: unknown) => {
   const seq = obj.seq ?? obj.sequence_number ?? obj.sequenceNumber;
   const sessionId = obj.sessionId ?? obj.session_id ?? obj.bootId ?? obj.boot_id;
   const apiKey = obj.apiKey ?? obj.api_key;
+  const positioningSource = obj.positioningSource ?? obj.positioning_source ?? obj.source;
+  const accuracyMeters = obj.accuracyMeters ?? obj.accuracy_meters ?? obj.accuracy;
 
   return {
     ...obj,
@@ -31,11 +33,16 @@ const normalizeLocationInput = (raw: unknown) => {
     seq,
     sessionId,
     apiKey,
+    positioningSource,
+    accuracyMeters,
   };
 };
 
 // Coerce boolean from boolean, strings like "true"/"false", or numbers 1/0
 const booleanCoercion = z.preprocess((val) => {
+  if (val === undefined || val === null) {
+    return false;
+  }
   if (typeof val === 'string') {
     const s = val.trim().toLowerCase();
     if (s === 'true' || s === '1') return true;
@@ -94,10 +101,28 @@ export const locationIngestionSchema = z.preprocess(
       .number({ message: 'longitude is required and must be a number' })
       .min(-180, 'longitude must be between -180 and 180')
       .max(180, 'longitude must be between -180 and 180'),
-    speed: z.coerce
-      .number({ message: 'speed (or speed_kmph) is required and must be a number' })
-      .min(0, 'speed cannot be negative'),
-    gpsFixed: booleanCoercion,
+    speed: z.preprocess(
+      (val) => (val === null || val === undefined || val === '' ? 0 : val),
+      z.coerce
+        .number({ message: 'speed (or speed_kmph) must be a number' })
+        .min(0, 'speed cannot be negative')
+        .default(0)
+    ),
+    gpsFixed: booleanCoercion.optional().default(false),
+    positioningSource: z
+      .string()
+      .trim()
+      .transform((val) => val.toUpperCase())
+      .optional()
+      .nullable(),
+    accuracyMeters: z.preprocess(
+      (val) => (val === null || val === undefined || val === '' ? null : val),
+      z.coerce
+        .number({ message: 'accuracyMeters must be a number' })
+        .min(0, 'accuracyMeters cannot be negative')
+        .optional()
+        .nullable()
+    ),
     batteryPercent: z.coerce
       .number({ message: 'batteryPercent (or battery_percent) must be a number between 0 and 100' })
       .min(0, 'batteryPercent must be between 0 and 100')

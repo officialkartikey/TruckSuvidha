@@ -156,8 +156,24 @@ export class LocationsService {
     }
     device.status = 'online';
 
-    // Case 1: gpsFixed is false — accept status update without overwriting valid coordinates
-    if (!input.gpsFixed) {
+    const rawSource = input.positioningSource?.trim().toUpperCase();
+    const effectiveSource = rawSource || (input.gpsFixed ? 'GNSS' : 'CELLULAR_LBS');
+    const effectiveAccuracy = input.accuracyMeters ?? null;
+
+    // Check if the payload represents an active/usable location fix:
+    // 1. Explicit gpsFixed is true
+    // 2. OR positioningSource indicates an alternative fix (e.g. CELLULAR_LBS, CELLULAR, WIFI, NETWORK, LBS, etc.)
+    // Note: If gpsFixed is false and no positioningSource is provided, or coordinates are (0, 0), treat as non-position status update.
+    const isNonGnssFix =
+      Boolean(rawSource) &&
+      rawSource !== 'NONE' &&
+      rawSource !== 'UNKNOWN' &&
+      !(input.latitude === 0 && input.longitude === 0);
+
+    const hasValidPositionFix = Boolean(input.gpsFixed) || isNonGnssFix;
+
+    // Case 1: No valid position fix — accept status update without overwriting valid coordinates
+    if (!hasValidPositionFix) {
       if (input.seq !== undefined && input.seq !== null) {
         if (device.lastSeq === null || device.lastSeq === undefined || isNewSession) {
           device.lastSeq = input.seq;
@@ -191,7 +207,7 @@ export class LocationsService {
       };
     }
 
-    // Case 2: gpsFixed is true — validate, deduplicate, and process GPS fix
+    // Case 2: Valid position fix (GNSS, CELLULAR_LBS, WIFI, etc.) — validate, deduplicate, and process fix
     let historySaved = false;
 
     if (!existingHistory) {
@@ -202,11 +218,11 @@ export class LocationsService {
           sessionId: device.sessionId ?? null,
           latitude: input.latitude,
           longitude: input.longitude,
-          speed: input.speed,
+          speed: input.speed ?? 0,
           timestamp: input.timestamp,
           receivedAt,
-          accuracy: null,
-          source: 'GNSS',
+          accuracy: effectiveAccuracy,
+          source: effectiveSource,
         });
         historySaved = true;
       } catch (err: any) {
@@ -236,11 +252,11 @@ export class LocationsService {
       device.latestLocation = {
         latitude: input.latitude,
         longitude: input.longitude,
-        speed: input.speed,
+        speed: input.speed ?? 0,
         timestamp: input.timestamp,
-        gpsFixed: true,
-        accuracy: null,
-        source: 'GNSS',
+        gpsFixed: Boolean(input.gpsFixed),
+        accuracy: effectiveAccuracy,
+        source: effectiveSource,
       };
       latestLocationUpdated = true;
     } else {
@@ -267,7 +283,7 @@ export class LocationsService {
       status: 'online',
       batteryPercent: device.batteryPercent ?? undefined,
       lastSeenAt: receivedAt.toISOString(),
-      gpsFixed: true,
+      gpsFixed: Boolean(input.gpsFixed),
     });
 
     if (latestLocationUpdated) {
@@ -275,18 +291,18 @@ export class LocationsService {
         deviceId,
         latitude: input.latitude,
         longitude: input.longitude,
-        speed: input.speed,
+        speed: input.speed ?? 0,
         timestamp: input.timestamp.toISOString(),
-        gpsFixed: true,
+        gpsFixed: Boolean(input.gpsFixed),
         receivedAt: receivedAt.toISOString(),
-        accuracy: null,
-        source: 'GNSS',
+        accuracy: effectiveAccuracy,
+        source: effectiveSource,
       });
     }
 
     return {
       deviceId,
-      gpsFixed: true,
+      gpsFixed: Boolean(input.gpsFixed),
       receivedAt,
       latestLocationUpdated,
       historySaved,
