@@ -199,6 +199,35 @@ describe('Location Ingestion & History Module', () => {
     expect(deviceRes.body.data.latestLocation.accuracy).toBe(550);
   });
 
+  it('should accept and store coordinates when gps_utc is empty string by falling back to server time', async () => {
+    const res = await request(app)
+      .post('/api/v1/device/location')
+      .set('x-device-key', deviceApiKey)
+      .send({
+        latitude: 28.67919,
+        longitude: 77.502785,
+        speed_kmph: 0,
+        gps_utc: '',
+        fix_valid: false,
+        seq: 1,
+        device_id: testDeviceId,
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.latestLocationUpdated).toBe(true);
+    expect(res.body.data.historySaved).toBe(true);
+
+    const deviceRes = await request(app)
+      .get(`/api/v1/devices/${testDeviceId}`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(deviceRes.status).toBe(200);
+    expect(deviceRes.body.data.latestLocation.latitude).toBe(28.67919);
+    expect(deviceRes.body.data.latestLocation.longitude).toBe(77.502785);
+    expect(deviceRes.body.data.latestLocation.source).toBe('CELLULAR_LBS');
+  });
+
   it('should prevent duplicate events with identical timestamps from duplicating history', async () => {
     const fixedTimestamp = new Date(Date.now() - 3000).toISOString();
     const payload = {

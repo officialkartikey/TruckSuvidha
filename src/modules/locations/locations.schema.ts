@@ -13,12 +13,35 @@ const normalizeLocationInput = (raw: unknown) => {
   const longitude = obj.longitude ?? obj.lng ?? obj.lon;
   const speed = obj.speed ?? obj.speed_kmph;
   const gpsFixed = obj.gpsFixed ?? obj.fix_valid ?? obj.gps_fixed;
-  const timestamp = obj.timestamp ?? obj.gps_utc;
+
+  // If timestamp is empty string (""), null, or undefined, fallback to current server time
+  const rawTimestamp = obj.timestamp ?? obj.gps_utc;
+  const timestamp =
+    (typeof rawTimestamp === 'string' && rawTimestamp.trim().length === 0) ||
+    rawTimestamp === undefined ||
+    rawTimestamp === null
+      ? new Date().toISOString()
+      : rawTimestamp;
+
   const batteryPercent = obj.batteryPercent ?? obj.battery_percent;
   const seq = obj.seq ?? obj.sequence_number ?? obj.sequenceNumber;
   const sessionId = obj.sessionId ?? obj.session_id ?? obj.bootId ?? obj.boot_id;
   const apiKey = obj.apiKey ?? obj.api_key;
-  const positioningSource = obj.positioningSource ?? obj.positioning_source ?? obj.source;
+
+  // Fallback positioningSource to CELLULAR_LBS if coordinates are non-zero
+  const hasCoordinates =
+    latitude !== undefined &&
+    latitude !== null &&
+    longitude !== undefined &&
+    longitude !== null &&
+    (Number(latitude) !== 0 || Number(longitude) !== 0);
+
+  const positioningSource =
+    obj.positioningSource ??
+    obj.positioning_source ??
+    obj.source ??
+    (hasCoordinates ? 'CELLULAR_LBS' : undefined);
+
   const accuracyMeters = obj.accuracyMeters ?? obj.accuracy_meters ?? obj.accuracy;
 
   return {
