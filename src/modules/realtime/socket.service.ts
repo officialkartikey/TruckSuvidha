@@ -54,6 +54,15 @@ class SocketService {
     this.io.to(room).emit('device:status', data);
     logger.debug(`Emitted device:status to room ${room}`, { deviceId });
   }
+
+  public isDeviceBeingTrackedLive(deviceId: string): boolean {
+    if (!this.io) {
+      return false;
+    }
+    const room = `device:${deviceId.toUpperCase()}`;
+    const subscribers = this.io.sockets.adapter.rooms.get(room);
+    return Boolean(subscribers && subscribers.size > 0);
+  }
 }
 
 export const socketService = new SocketService();

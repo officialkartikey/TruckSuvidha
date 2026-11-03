@@ -13,6 +13,7 @@ export interface IngestionResult {
   receivedAt: Date;
   latestLocationUpdated: boolean;
   historySaved: boolean;
+  liveTracking: boolean;
   message: string;
 }
 
@@ -21,6 +22,7 @@ export class LocationsService {
     const receivedAt = new Date();
     const deviceId = device.deviceId;
     const inputTimestampMs = input.timestamp.getTime();
+    const isLiveTracking = socketService.isDeviceBeingTrackedLive(deviceId);
 
     // 1. Idempotency Check: check if this exact timestamp was already recorded for this device
     const existingHistory = await LocationHistory.findOne({
@@ -47,6 +49,7 @@ export class LocationsService {
           receivedAt: existingHistory.receivedAt || receivedAt,
           latestLocationUpdated: false,
           historySaved: false,
+          liveTracking: isLiveTracking,
           message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
         };
       }
@@ -99,6 +102,7 @@ export class LocationsService {
               receivedAt: device.lastSeenAt || receivedAt,
               latestLocationUpdated: false,
               historySaved: false,
+              liveTracking: isLiveTracking,
               message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
             };
           }
@@ -134,6 +138,7 @@ export class LocationsService {
               receivedAt: existingSeq.receivedAt || receivedAt,
               latestLocationUpdated: false,
               historySaved: false,
+              liveTracking: isLiveTracking,
               message: 'Duplicate telemetry retry acknowledged. Location already recorded.',
             };
           }
@@ -203,6 +208,7 @@ export class LocationsService {
         receivedAt,
         latestLocationUpdated: false,
         historySaved: false,
+        liveTracking: isLiveTracking,
         message: 'Status update recorded without GPS fix. Existing coordinates preserved.',
       };
     }
@@ -306,6 +312,7 @@ export class LocationsService {
       receivedAt,
       latestLocationUpdated,
       historySaved,
+      liveTracking: isLiveTracking,
       message: latestLocationUpdated
         ? 'Location updated and stored successfully'
         : 'Buffered historical location stored. Newer latest location preserved.',
